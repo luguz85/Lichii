@@ -1,0 +1,125 @@
+name: Lichii OoT AutoBuild (Windows MSVC)
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Performance (#463) or Performance + DLSS (#456)"
+        required: true
+        type: choice
+        options: [performance, dlss]
+        default: performance
+      include_closed_475:
+        description: "Advanced: test closed/unmerged PR #475 (risky)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  windows-msvc:
+    runs-on: windows-2022
+    timeout-minutes: 330
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PROFILE: ${{ inputs.profile }}
+      INCLUDE_475: ${{ inputs.include_closed_475 }}
+    steps:
+      - name: Check out latest official nx2 source
+        uses: actions/checkout@v5
+        with:
+          repository: zortos293/Lichii
+          ref: nx2
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Apply selected PRs (abort on conflicts)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Lichii OoT AutoBuild"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "Upstream nx2: $(git rev-parse HEAD)" > LICHII_OOT_BUILD_INFO.txt
+          echo "Profile: $PROFILE" >> LICHII_OOT_BUILD_INFO.txt
+          echo "PR #465 is already upstream and not re-applied" >> LICHII_OOT_BUILD_INFO.txt
+          prs=(463)
+          if [[ "$PROFILE" == "dlss" ]]; then prs+=(456); fi
+          if [[ "$INCLUDE_475" == "true" ]]; then prs+=(475); fi
+          for pr in "${prs[@]}"; do
+            merged=$(gh api "repos/zortos293/Lichii/pulls/$pr" --jq .merged)
+            state=$(gh api "repos/zortos293/Lichii/pulls/$pr" --jq .state)
+            if [[ "$merged" == "true" ]]; then
+              echo "PR #$pr already merged, skipping"
+              continue
+            fi
+            if [[ "$state" != "open" && "$pr" != "475" ]]; then
+              echo "::error::PR #$pr closed without merge"
+              exit 1
+            fi
+            if [[ "$pr" == "475" ]]; then
+              echo "::warning::PR #475 is closed without merge, manual test only"
+            fi
+            git fetch --no-tags origin "+refs/pull/$pr/head:refs/remotes/pr/$pr"
+            if ! git merge --no-ff --no-edit "refs/remotes/pr/$pr"; then
+              git merge --abort || true
+              echo "::error::Conflict applying PR #$pr; no code was published"
+              exit 1
+            fi
+            echo "Applied PR #$pr" >> LICHII_OOT_BUILD_INFO.txt
+          done
+          cat LICHII_OOT_BUILD_INFO.txt
+
+      - name: Refresh submodules
+        shell: bash
+        run: git submodule update --init --recursive
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Qt 6 for MSVC
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtcharts
+          cache: true
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: ./tools/windows/install-vulkan-sdk.ps1
+
+      - name: Configure MSVC Release
+        shell: bash
+        run: |
+          cmake -S . -B build/oot -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF -DYUZU_TESTS=OFF \
+            -DYUZU_CMD=ON -DYUZU_ROOM=OFF -DYUZU_ROOM_STANDALONE=OFF \
+            -DYUZU_USE_BUNDLED_QT=OFF -DYUZU_USE_BUNDLED_SDL3=ON \
+            -DENABLE_UPDATE_CHECKER=ON -DLICHII_BUILD_TAG=oot-experimental \
+            -DLICHII_BUILD_PLATFORM=windows-x86_64 -DUSE_DISCORD_PRESENCE=OFF
+
+      - name: Build Lichii
+        shell: bash
+        run: cmake --build build/oot --target yuzu yuzu-cmd --parallel
+
+      - name: Package Windows app
+        shell: pwsh
+        run: |
+          foreach ($exe in 'lichii.exe', 'eden-cli.exe') {
+            if (-not (Test-Path "build/oot/bin/$exe")) { throw "Missing: $exe" }
+          }
+          windeployqt --release --no-translations build/oot/bin/lichii.exe
+          Copy-Item LICHII_OOT_BUILD_INFO.txt build/oot/bin/LICHII_OOT_BUILD_INFO.txt
+
+      - name: Upload Windows MSVC build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lichii-OoT-MSVC-${{ inputs.profile }}-${{ github.run_number }}
+          path: build/oot/bin/
+          if-no-files-found: error
+          retention-days: 14
