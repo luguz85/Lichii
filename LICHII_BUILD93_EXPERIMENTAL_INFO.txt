@@ -1,0 +1,8 @@
+﻿LICHII BUILD 93 EXPERIMENTAL - MSVC x64
+Base: build-93 / 09b78bd2dfdd279cc81caed2a794ed85062725c9
+Perfil: EQUILIBRADA
+PR realmente integrados: #251, #278, #250, #264
+Commit de trabajo antes de manifiesto: 776a3676d7cf086c6bd025eea967a6400514a8fe
+Preparado con GitHub Actions de la fuente zortos293/Lichii.
+No incluye keys, juegos ni firmware.
+Estado: SIN VERIFICAR hasta que GitHub Actions termine correctamente y se pruebe Ocarina en la TUF.
